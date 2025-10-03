@@ -1,9 +1,5 @@
 // server.js
 // Single-file Express + SQLite backend for Material Management System
-// - Uses sqlite3 (file: database.sqlite) and auto-creates schema & seed data if missing.
-// - JWT auth, bcrypt password hashing
-// - Returns JSON { success: true, data: ... } on success
-
 const express = require('express');
 const cors = require('cors');
 const bodyParser = require('body-parser');
@@ -16,7 +12,6 @@ const bcrypt = require('bcrypt');
 const PORT = process.env.PORT || 4000;
 const JWT_SECRET = process.env.JWT_SECRET || 'supersecret';
 const NODE_ENV = process.env.NODE_ENV || 'development';
-
 const DB_FILE = path.join(__dirname, 'database.sqlite');
 const UPLOAD_DIR = path.join(__dirname, 'uploads');
 
@@ -54,7 +49,6 @@ function getSql(sql, params = []) {
 
 // Initialize DB schema and seed data if missing
 async function initDb() {
-  // Wrap in serialize to run sequentially
   db.serialize(async () => {
     try {
       // Users
@@ -185,13 +179,26 @@ initDb();
 
 // Express app
 const app = express();
-app.use(cors()); // Allow all origins (for dev). Harden later.
+
+// CORS Configuration - CRITICAL FOR VERCEL
+app.use(cors({
+  origin: [
+    'http://localhost:3000',
+    'https://material-management-mobile.vercel.app',
+    'https://*.vercel.app'
+  ],
+  credentials: true,
+  methods: ['GET', 'POST', 'PUT', 'DELETE', 'PATCH', 'OPTIONS'],
+  allowedHeaders: ['Content-Type', 'Authorization']
+}));
+
 app.use(bodyParser.json({ limit: '10mb' }));
 
 // Helper: standard JSON success / fail wrappers
 function ok(res, data) {
   return res.json({ success: true, data });
 }
+
 function fail(res, status = 400, error = 'Bad Request') {
   return res.status(status).json({ success: false, error });
 }
@@ -200,9 +207,15 @@ function fail(res, status = 400, error = 'Bad Request') {
 function authMiddleware(req, res, next) {
   const auth = req.headers['authorization'];
   if (!auth) return fail(res, 401, 'Authorization header missing');
+
   const parts = auth.split(' ');
-  if (parts.length !== 2 || parts[0] !== 'Bearer') return fail(res, 401, 'Invalid Authorization header');
-  const token = parts[1];
+if (parts.length !== 2 || parts[0] !== 'Bearer') {
+  return fail(res, 401, 'Invalid Authorization header');
+}
+
+const token = parts[1];
+
+  const token = parts;
   try {
     const payload = jwt.verify(token, JWT_SECRET);
     req.user = payload;
@@ -221,9 +234,7 @@ function requireRole(roles) {
   };
 }
 
-// -----------------------
 // Auth routes
-// -----------------------
 app.post('/api/auth/login', async (req, res) => {
   try {
     const { username, email, password } = req.body;
@@ -233,6 +244,7 @@ app.post('/api/auth/login', async (req, res) => {
       `SELECT * FROM users WHERE username = ? OR email = ? LIMIT 1`,
       [username || '', email || '']
     );
+
     if (!user) return fail(res, 401, 'Invalid credentials');
 
     const match = await bcrypt.compare(password, user.password_hash);
@@ -244,8 +256,16 @@ app.post('/api/auth/login', async (req, res) => {
       { expiresIn: '8h' }
     );
 
-    // return token + user info
-    return ok(res, { token, user: { id: user.id, username: user.username, email: user.email, role: user.role, siteId: user.siteId } });
+    return ok(res, {
+      token,
+      user: {
+        id: user.id,
+        username: user.username,
+        email: user.email,
+        role: user.role,
+        siteId: user.siteId
+      }
+    });
   } catch (err) {
     console.error('login error', err);
     return fail(res, 500, 'Server error');
@@ -256,9 +276,25 @@ app.post('/api/auth/logout', (req, res) => {
   return ok(res, { message: 'Logged out' });
 });
 
-// -----------------------
+// Auth verify endpoint - MISSING FROM ORIGINAL
+app.get('/api/auth/verify', authMiddleware, async (req, res) => {
+  try {
+    const user = await getSql(`SELECT * FROM users WHERE id = ?`, [req.user.id]);
+    if (!user) return fail(res, 404, 'User not found');
+
+    return ok(res, {
+      id: user.id,
+      username: user.username,
+      email: user.email,
+      role: user.role,
+      siteId: user.siteId
+    });
+  } catch (err) {
+    return fail(res, 500, 'Server error');
+  }
+});
+
 // Materials
-// -----------------------
 app.get('/api/materials', authMiddleware, async (req, res) => {
   try {
     const rows = await allSql(`SELECT * FROM materials ORDER BY name`);
@@ -269,25 +305,38 @@ app.get('/api/materials', authMiddleware, async (req, res) => {
   }
 });
 
-app.post('/api/materials', authMiddleware, requireRole(['Director']), async (req, res) => {
+// Materials search endpoint - MISSING FROM ORIGINAL
+app.get('/api/materials/search', authMiddleware, async (req, res) => {
   try {
-    const { code, name, category, unit, description } = req.body;
-    if (!name) return fail(res, 400, 'name required');
-    const r = await runSql(
-      `INSERT INTO materials (code, name, category, unit, description) VALUES (?, ?, ?, ?, ?)`,
-      [code || null, name, category || null, unit || null, description || null]
+    const { q } = req.query;
+    if (!q) return ok(res, []);
+
+    const rows = await allSql(
+      `SELECT * FROM materials WHERE name LIKE ? OR description LIKE ? ORDER BY name LIMIT 20`,
+      [`%${q}%`, `%${q}%`]
     );
-    const mat = await getSql(`SELECT * FROM materials WHERE id = ?`, [r.lastID]);
-    return ok(res, mat);
+    return ok(res, rows);
   } catch (err) {
     console.error(err);
     return fail(res, 500, 'Server error');
   }
 });
 
-// -----------------------
+// Sites endpoint - MISSING FROM ORIGINAL
+app.get('/api/sites', authMiddleware, async (req, res) => {
+  try {
+    const sites = [
+      { id: 'site-chembur', name: 'Chembur Site' },
+      { id: 'site-bandra', name: 'Bandra Site' },
+      { id: 'site-mumbai', name: 'Mumbai Central Site' }
+    ];
+    return ok(res, sites);
+  } catch (err) {
+    return fail(res, 500, 'Server error');
+  }
+});
+
 // Indents
-// -----------------------
 app.post('/api/indents', authMiddleware, requireRole(['Site Engineer']), async (req, res) => {
   try {
     const { material_id, quantity, siteId } = req.body;
@@ -298,10 +347,11 @@ app.post('/api/indents', authMiddleware, requireRole(['Site Engineer']), async (
       `INSERT INTO indents (material_id, quantity, siteId, status, createdBy) VALUES (?, ?, ?, ?, ?)`,
       [material_id, quantity, siteId || req.user.siteId, status, req.user.id]
     );
-    const indent = await getSql(`SELECT * FROM indents WHERE id = ?`, [r.lastID]);
 
-    // notification to purchase team (simple)
+    const indent = await getSql(`SELECT * FROM indents WHERE id = ?`, [r.lastID]);
+    
     await runSql(`INSERT INTO notifications (message, userId) VALUES (?, ?)`, [`New indent #${r.lastID} created`, null]);
+    
     return ok(res, indent);
   } catch (err) {
     console.error(err);
@@ -313,11 +363,9 @@ app.get('/api/indents', authMiddleware, async (req, res) => {
   try {
     const role = req.user.role;
     if (role === 'Site Engineer') {
-      // engineers only see their site
       const rows = await allSql(`SELECT i.*, m.name as material_name FROM indents i LEFT JOIN materials m ON m.id=i.material_id WHERE i.siteId = ? ORDER BY i.createdAt DESC`, [req.user.siteId]);
       return ok(res, rows);
     } else {
-      // purchase/director see all
       const rows = await allSql(`SELECT i.*, m.name as material_name FROM indents i LEFT JOIN materials m ON m.id=i.material_id ORDER BY i.createdAt DESC`);
       return ok(res, rows);
     }
@@ -333,20 +381,18 @@ app.patch('/api/indents/:id/approve', authMiddleware, requireRole(['Purchase Tea
     const indent = await getSql(`SELECT * FROM indents WHERE id = ?`, [id]);
     if (!indent) return fail(res, 404, 'Indent not found');
 
-    // set approvedBy and status progression:
     let newStatus = indent.status;
     if (req.user.role === 'Purchase Team') {
       newStatus = 'Approved by Purchase';
     } else if (req.user.role === 'Director') {
-      // if director approves after purchase, final
       if (indent.status === 'Approved by Purchase') newStatus = 'Approved by Director';
       else newStatus = 'Approved by Director';
     }
+
     await runSql(`UPDATE indents SET status = ?, approvedBy = ? WHERE id = ?`, [newStatus, req.user.id, id]);
-
-    // notification
+    
     await runSql(`INSERT INTO notifications (message, userId) VALUES (?, ?)`, [`Indent #${id} approved by ${req.user.role}`, null]);
-
+    
     const updated = await getSql(`SELECT * FROM indents WHERE id = ?`, [id]);
     return ok(res, updated);
   } catch (err) {
@@ -370,7 +416,6 @@ app.patch('/api/indents/:id/receive', authMiddleware, requireRole(['Site Enginee
     else newStatus = 'Partially Received';
 
     await runSql(`UPDATE indents SET receivedQty = ?, status = ? WHERE id = ?`, [newReceived, newStatus, id]);
-
     await runSql(`INSERT INTO notifications (message, userId) VALUES (?, ?)`, [`Indent #${id} received ${receivedQty}`, null]);
 
     const updated = await getSql(`SELECT * FROM indents WHERE id = ?`, [id]);
@@ -381,48 +426,37 @@ app.patch('/api/indents/:id/receive', authMiddleware, requireRole(['Site Enginee
   }
 });
 
-app.patch('/api/indents/:id/damage', authMiddleware, requireRole(['Site Engineer']), async (req, res) => {
+// Dashboard stats endpoint - MISSING FROM ORIGINAL  
+app.get('/api/reports/dashboard', authMiddleware, async (req, res) => {
   try {
-    const id = parseInt(req.params.id);
-    const { damagedQty, description } = req.body;
-    if (typeof damagedQty !== 'number') return fail(res, 400, 'damagedQty (number) required');
-
-    const indent = await getSql(`SELECT * FROM indents WHERE id = ?`, [id]);
-    if (!indent) return fail(res, 404, 'Indent not found');
-
-    const newDamaged = (indent.damagedQty || 0) + damagedQty;
-    await runSql(`UPDATE indents SET damagedQty = ?, status = ? WHERE id = ?`, [newDamaged, 'Damaged', id]);
-
-    await runSql(`INSERT INTO notifications (message, userId) VALUES (?, ?)`, [`Indent #${id} marked damaged: ${description || ''}`, null]);
-
-    const updated = await getSql(`SELECT * FROM indents WHERE id = ?`, [id]);
-    return ok(res, updated);
+    const { siteId } = req.query;
+    
+    let whereClause = '';
+    let params = [];
+    if (siteId && req.user.role === 'Site Engineer') {
+      whereClause = 'WHERE siteId = ?';
+      params = [siteId];
+    }
+    
+    const totalIndents = await getSql(`SELECT COUNT(*) as count FROM indents ${whereClause}`, params);
+    const pendingApproval = await getSql(`SELECT COUNT(*) as count FROM indents ${whereClause ? whereClause + ' AND' : 'WHERE'} status = 'Pending'`, siteId ? [...params] : []);
+    const approvedIndents = await getSql(`SELECT COUNT(*) as count FROM indents ${whereClause ? whereClause + ' AND' : 'WHERE'} status LIKE '%Approved%'`, siteId ? [...params] : []);
+    
+    return ok(res, {
+      totalIndents: totalIndents.count || 0,
+      pendingApproval: pendingApproval.count || 0,
+      approvedIndents: approvedIndents.count || 0,
+      thisMonthIndents: 0,
+      recentIndents: [],
+      chartData: [],
+      statusDistribution: []
+    });
   } catch (err) {
-    console.error(err);
     return fail(res, 500, 'Server error');
   }
 });
 
-app.patch('/api/indents/:id/close', authMiddleware, requireRole(['Director']), async (req, res) => {
-  try {
-    const id = parseInt(req.params.id);
-    const indent = await getSql(`SELECT * FROM indents WHERE id = ?`, [id]);
-    if (!indent) return fail(res, 404, 'Indent not found');
-
-    await runSql(`UPDATE indents SET status = ? WHERE id = ?`, ['Closed', id]);
-    await runSql(`INSERT INTO notifications (message, userId) VALUES (?, ?)`, [`Indent #${id} closed by Director`, null]);
-
-    const updated = await getSql(`SELECT * FROM indents WHERE id = ?`, [id]);
-    return ok(res, updated);
-  } catch (err) {
-    console.error(err);
-    return fail(res, 500, 'Server error');
-  }
-});
-
-// -----------------------
 // Orders
-// -----------------------
 app.post('/api/orders', authMiddleware, requireRole(['Purchase Team']), async (req, res) => {
   try {
     const { indent_id, vendor_name, vendor_contact } = req.body;
@@ -453,12 +487,9 @@ app.get('/api/orders', authMiddleware, requireRole(['Purchase Team','Director'])
   }
 });
 
-// -----------------------
 // Reports
-// -----------------------
 app.get('/api/reports/monthly', authMiddleware, requireRole(['Purchase Team','Director']), async (req, res) => {
   try {
-    // Simple summary counts
     const totalIndentsRow = await getSql(`SELECT COUNT(*) as total FROM indents`);
     const completedRow = await getSql(`SELECT COUNT(*) as completed FROM indents WHERE status = 'Completed'`);
     const pendingRow = await getSql(`SELECT COUNT(*) as pending FROM indents WHERE status = 'Pending'`);
@@ -489,12 +520,9 @@ app.get('/api/reports/export', authMiddleware, requireRole(['Purchase Team','Dir
   }
 });
 
-// -----------------------
 // Notifications
-// -----------------------
 app.get('/api/notifications', authMiddleware, async (req, res) => {
   try {
-    // For now return all notifications
     const rows = await allSql(`SELECT * FROM notifications ORDER BY createdAt DESC LIMIT 100`);
     return ok(res, rows);
   } catch (err) {
@@ -503,33 +531,28 @@ app.get('/api/notifications', authMiddleware, async (req, res) => {
   }
 });
 
-// -----------------------
-// Upload (base64)
- // -----------------------
+// Upload
 app.post('/api/upload', authMiddleware, async (req, res) => {
   try {
     const { base64, indent_id } = req.body;
     if (!base64) return fail(res, 400, 'base64 required');
 
-    // parse base64 (data:[mime];base64,AAAA)
     const matches = base64.match(/^data:(.+);base64,(.+)$/);
-    let ext = 'jpg';
-    let data;
-    if (matches) {
-      const mime = matches[1];
-      data = matches[2];
-      if (mime.includes('png')) ext = 'png';
-      else if (mime.includes('jpeg')) ext = 'jpg';
-    } else {
-      // assume raw base64 jpg
-      data = base64;
-    }
+let ext = 'jpg';
+let data;
+if (matches) {
+  const mime = matches[1];
+  data = matches[2];
+  if (mime.includes('png')) ext = 'png';
+  else if (mime.includes('jpeg')) ext = 'jpg';
+} else {
+  data = base64;
+}
 
     const filename = `receipt-${Date.now()}-${Math.random().toString(36).slice(2)}.${ext}`;
     const filepath = path.join(UPLOAD_DIR, filename);
     fs.writeFileSync(filepath, Buffer.from(data, 'base64'));
 
-    // record in receipts if indent_id provided
     if (indent_id) {
       await runSql(`INSERT INTO receipts (indent_id, file_url, uploadedBy) VALUES (?, ?, ?)`, [indent_id, `/uploads/${filename}`, req.user.id]);
     }
@@ -545,33 +568,12 @@ app.post('/api/upload', authMiddleware, async (req, res) => {
 // Serve uploaded files
 app.use('/uploads', express.static(UPLOAD_DIR));
 
-// -----------------------
 // Health
-// -----------------------
 app.get('/health', (req, res) => {
   return ok(res, { status: 'healthy', service: 'Mock Material Management API', timestamp: new Date().toISOString() });
 });
 
-// -----------------------
-// Dev-only helper: create a dev login route (only when not production)
-// -----------------------
-if (NODE_ENV !== 'production') {
-  app.post('/api/dev/login', async (req, res) => {
-    const { role = 'Site Engineer', siteId = 'site-chembur', username } = req.body;
-    const tempUser = {
-      id: `dev-${Date.now()}`,
-      username: username || `${role.toLowerCase().replace(/\s+/g,'')}_dev`,
-      role,
-      siteId
-    };
-    const token = jwt.sign(tempUser, JWT_SECRET, { expiresIn: '8h' });
-    return ok(res, { token, user: tempUser });
-  });
-}
-
-// -----------------------
 // Start server
-// -----------------------
 app.listen(PORT, () => {
   console.log(`✅ Mock API (SQLite) running on port ${PORT}`);
 });
