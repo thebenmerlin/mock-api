@@ -1,2 +1,4 @@
-# mock-api (cleaned)
-This repository has been reset to a clean state.
+# mock-api (single-file Express + SQLite)
+
+This repo contains a single-file Express.js backend (`server.js`) using SQLite for persistence.
+Designed to be simple, self-contained, and deployable on Render.
