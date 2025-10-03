@@ -209,13 +209,11 @@ function authMiddleware(req, res, next) {
   if (!auth) return fail(res, 401, 'Authorization header missing');
 
   const parts = auth.split(' ');
-if (parts.length !== 2 || parts[0] !== 'Bearer') {
-  return fail(res, 401, 'Invalid Authorization header');
-}
+  if (parts.length !== 2 || parts[0] !== 'Bearer') {
+    return fail(res, 401, 'Invalid Authorization header');
+  }
 
-const token = parts[1];
-
-  const token = parts;
+  const token = parts[1];  // correct token extraction
   try {
     const payload = jwt.verify(token, JWT_SECRET);
     req.user = payload;
